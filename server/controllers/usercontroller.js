@@ -2,6 +2,7 @@ import usermodel from "../models/usermodel.js";
 import bcrypt from 'bcrypt'
 import jwt from 'jsonwebtoken'
 import razorpay from 'razorpay'
+import transactionmodel from "../models/transactionmodel.js";
 
 const registeruser= async(req,res)=>{
 try {
@@ -64,6 +65,93 @@ const usercredit =async (req,res)=>{
         res.json({success:false, message: error.message})
     }
 }
+const razorpayinstance= new razorpay({
+    key_id: process.env.RAZORPAY_KEY_ID,
+    key_secret: process.env.RAZORPAY_KEY_SECRET
+});
+const paymentrazorpay=async(req,res)=>{
+    try {
+        const{userid,planid}=req.body
+        const userdata=await usermodel.findById(userid)
+        if(!userdata||!planid){
+           return res.json({
+                success:false,
+                message: "userid or plan id missing"
+            })
+        }
+        let credits,plan,amount, date
+        switch(planid){
+            case 'Basic':
+                plan='Basic'
+                amount=5
+                credits=100
+                break;
+            case 'Advanced':
+                plan='Advanced'
+                amount=10
+                credits=500
+                break;
+            case 'Business':
+                plan='Business'
+                amount=20
+                credits=5000
+                break;
+             default:
+            return res.json({success:false,message:"plan not found"})   
+        }
+          date=Date.now()  
+          const transactiondata={
+            credits,date,plan,amount,userid
+          }
+        const newtransaction = await transactionmodel.create(transactiondata)
+        const options= {
+            amount:amount * 100,
+            currency: process.env.currency,
+            receipt: newtransaction._id
+        }
+        await razorpayinstance.orders.create(options,(error,order)=>{
+             if(error){
+                console.log(error.message);
+              return  res.json({
+                    success:false,
+                    message:error.message
+                })
+            }
+            res.json({
+                success:true,order
+            })
+        })
+    } catch (error) {
+        console.log(error.message);
+        res.json({
+            success:false,
+            message: error.message
+        })
+        
+    }
+}
+const verifypay=async(req,res)=>{
+    try {
+        const {razorpay_order_id}=req.body.res
+        const orderinfo= await razorpayinstance.orders.fetch(razorpay_order_id)
+        if(orderinfo.status === 'paid'){
+         const transactiondata= await transactionmodel.findById(orderinfo.receipt)
+         if(transactiondata.payment){
+            return res.json({success:false, message:"payment already verified"})
+         }
+         const userdata= await usermodel.findById(transactiondata.userid)
+         const credit= userdata.credit + transactiondata.credits
+         await usermodel.findByIdAndUpdate(userdata._id,{credit})
+         await transactionmodel.findByIdAndUpdate(transactiondata._id,{payment :true})
+         res.json({success:true, message:"credits added"})
+        }
+        else {
+            res.json({success:false, message:"payment failed"})
+        }
+        
+    } catch (error) {
+        res.json({success : false, message:"failed"})
+    }
+}
 
-
-export {registeruser, userlogin,usercredit}
+export {registeruser, userlogin,usercredit,paymentrazorpay,verifypay}
